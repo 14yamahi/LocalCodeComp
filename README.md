@@ -10,8 +10,6 @@ The app:
 - shows the result (AC / TLE / WA / RE + runtime),
 - and optionally records scores in a simple ranking table (opt-in).
 
-The first bundled problem is a **bracket sequence validator** (parentheses matching).
-
 ---
 
 ## Folder structure
@@ -19,7 +17,7 @@ The first bundled problem is a **bracket sequence validator** (parentheses match
     .
     ├─ app.R
     └─ problems/
-       └─ brackets/
+       └─ <problem_id>/
           └─ problem.R
 
 - `app.R`  
