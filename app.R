@@ -206,16 +206,18 @@ ui <- fluidPage(
       ),
       hr(),
       h4("Result"),
-      verbatimTextOutput("judge_result"),
+      htmlOutput("judge_summary"),
       tableOutput("wrong_table"),
       hr(),
       h4("Ranking (opt-in)"),
       p("If you want to appear in the ranking table, enter a display name,",
         "check the box below, and click 'Save my score' after running the judge."),
       textInput("rank_name", "Display name:", ""),
-      checkboxInput("rank_consent",
-                    "I want to add my latest result to the ranking table",
-                    value = FALSE),
+      checkboxInput(
+        "rank_consent",
+        "I want to add my latest result to the ranking table",
+        value = FALSE
+      ),
       actionButton("save_score", "Save my score"),
       br(), br(),
       tableOutput("score_table")
@@ -256,6 +258,19 @@ server <- function(input, output, session) {
     updateTextAreaInput(session, "user_code", value = template)
   })
 
+  # Helper: render plain text message in the result area
+  render_plain_message <- function(msg) {
+    output$judge_summary <- renderUI({
+      HTML(
+        paste0(
+          "<pre>",
+          htmltools::htmlEscape(msg),
+          "</pre>"
+        )
+      )
+    })
+  }
+
   # Run judge
   observeEvent(input$run_judge, {
     p <- selected_problem()
@@ -265,9 +280,9 @@ server <- function(input, output, session) {
     last_result(NULL)
 
     if (nchar(trimws(code)) == 0) {
-      output$judge_result <- renderText({
+      render_plain_message(
         "Submission is empty. Please implement the required function and try again."
-      })
+      )
       output$wrong_table <- renderTable(NULL)
       return()
     }
@@ -277,41 +292,41 @@ server <- function(input, output, session) {
     eval_res <- try(eval(parse(text = code), envir = user_env), silent = TRUE)
 
     if (inherits(eval_res, "try-error")) {
-      output$judge_result <- renderText({
+      render_plain_message(
         paste0(
           "Compilation error (RE)\n\n",
           as.character(eval_res)
         )
-      })
+      )
       output$wrong_table <- renderTable(NULL)
       return()
     }
 
     fn_name <- p$function_name
     if (is.null(fn_name) || !nzchar(fn_name)) {
-      output$judge_result <- renderText({
+      render_plain_message(
         "This problem does not define a function_name. Please fix the problem definition."
-      })
+      )
       output$wrong_table <- renderTable(NULL)
       return()
     }
 
     if (!exists(fn_name, envir = user_env, inherits = FALSE)) {
-      output$judge_result <- renderText({
+      render_plain_message(
         paste0(
           "Function '", fn_name, "' was not found in your submission.\n",
           "Please implement a function named ", fn_name, "() with the correct signature."
         )
-      })
+      )
       output$wrong_table <- renderTable(NULL)
       return()
     }
 
     fun <- get(fn_name, envir = user_env)
     if (!is.function(fun)) {
-      output$judge_result <- renderText({
+      render_plain_message(
         paste0("Object '", fn_name, "' exists but is not a function. Please check your code.")
-      })
+      )
       output$wrong_table <- renderTable(NULL)
       return()
     }
@@ -319,14 +334,14 @@ server <- function(input, output, session) {
     # Run all tests for this problem
     res <- try(run_all_tests(fun, p), silent = TRUE)
     if (inherits(res, "try-error")) {
-      output$judge_result <- renderText({
+      render_plain_message(
         paste0("Internal judge error: ", as.character(res))
-      })
+      )
       output$wrong_table <- renderTable(NULL)
       return()
     }
 
-    # Store last_result for optional ranking
+    # Store last_result for optional ranking (ensure timestamp is POSIXct)
     last_result(list(
       problem_id    = p$id,
       problem_title = p$title,
@@ -334,10 +349,10 @@ server <- function(input, output, session) {
       passed        = res$passed,
       total         = res$total,
       elapsed       = res$elapsed,
-      timestamp     = Sys.time()
+      timestamp     = as.POSIXct(Sys.time(), tz = "UTC")
     ))
 
-    # Prepare summary text
+    # Prepare colored status label
     status_label <- switch(
       res$status,
       "AC"  = "AC (Accepted)",
@@ -347,10 +362,24 @@ server <- function(input, output, session) {
       res$status
     )
 
-    summary_text <- paste0(
-      "Status      : ", status_label, "\n",
-      "Passed tests: ", res$passed, " / ", res$total, "\n",
-      sprintf("Time        : %.4f seconds\n", res$elapsed)
+    status_color <- if (res$status == "AC") {
+      "#008000"  # green
+    } else if (res$status == "TLE") {
+      "#808080"  # gray
+    } else {
+      "#CC0000"  # red for WA / RE / others
+    }
+
+    status_html <- sprintf(
+      '<span style="color:%s;font-weight:bold;">%s</span>',
+      status_color, status_label
+    )
+
+    summary_html <- sprintf(
+      '<pre>Status      : %s
+Passed tests: %d / %d
+Time        : %.4f seconds</pre>',
+      status_html, res$passed, res$total, res$elapsed
     )
 
     if (length(res$wrong_cases) == 0) {
@@ -423,8 +452,11 @@ server <- function(input, output, session) {
       )
     }
 
-    output$judge_result <- renderText({
-      paste0(summary_text, "\n", detail_text)
+    # Render summary and detail as HTML (with colored status)
+    output$judge_summary <- renderUI({
+      safe_detail <- htmltools::htmlEscape(detail_text)
+      safe_detail <- gsub("\n", "<br/>", safe_detail, fixed = TRUE)
+      HTML(paste0(summary_html, "<br/>", safe_detail))
     })
 
     output$wrong_table <- renderTable({
@@ -432,7 +464,7 @@ server <- function(input, output, session) {
     })
   })
 
-  # Save score to ranking table (opt-in)
+  # Save score to ranking table (opt-in), keeping only best per (problem_id, user_name)
   observeEvent(input$save_score, {
     lr <- last_result()
 
@@ -452,8 +484,10 @@ server <- function(input, output, session) {
       return()
     }
 
-    # Reload scores to reduce conflicts between sessions
+    # Reload scores from disk to reduce conflicts between sessions
     df <- load_scores()
+
+    # New row for this submission
     new_row <- data.frame(
       problem_id    = lr$problem_id,
       problem_title = lr$problem_title,
@@ -462,17 +496,44 @@ server <- function(input, output, session) {
       passed        = lr$passed,
       total         = lr$total,
       elapsed       = lr$elapsed,
-      timestamp     = lr$timestamp,
+      timestamp     = as.POSIXct(lr$timestamp, tz = "UTC"),
       stringsAsFactors = FALSE
     )
+
     df <- rbind(df, new_row)
+
+    # Define status ordering: better statuses come first
+    status_order <- c("AC", "TLE", "WA", "RE")
+
+    # Rank all rows so that "better" scores come first within each (problem_id, user_name)
+    df$status_factor <- factor(df$status, levels = status_order, ordered = TRUE)
+
+    df <- df[order(
+      df$problem_id,
+      df$user_name,
+      df$status_factor,         # AC < TLE < WA < RE (ordered factor)
+      -df$passed,               # more passed tests is better
+      df$elapsed,               # smaller elapsed time is better
+      df$timestamp              # earlier timestamp first
+    ), ]
+
+    df$status_factor <- NULL
+
+    # Keep only the best row per (problem_id, user_name)
+    keep_idx <- !duplicated(df[, c("problem_id", "user_name")])
+    df <- df[keep_idx, ]
+
+    # Save back to disk and update reactive value
     save_scores(df)
     score_data(df)
 
-    showNotification("Your score has been added to the ranking table.", type = "message")
+    showNotification(
+      "Your score has been added to the ranking table (best result per name is kept).",
+      type = "message"
+    )
   })
 
-  # Show ranking table for the selected problem
+  # Show ranking table for the selected problem (with colored status)
   output$score_table <- renderTable({
     df <- score_data()
     if (nrow(df) == 0) return(NULL)
@@ -491,8 +552,24 @@ server <- function(input, output, session) {
 
     df$status_factor <- NULL
 
+    # Color status column
+    status_color <- ifelse(
+      df$status == "AC", "#008000",
+      ifelse(df$status == "TLE", "#808080", "#CC0000")
+    )
+    df$status <- sprintf(
+      '<span style="color:%s;font-weight:bold;">%s</span>',
+      status_color, df$status
+    )
+
+    # Format timestamp nicely for display
+    df$timestamp <- format(df$timestamp, "%Y-%m-%d %H:%M:%S")
+
     df[, c("user_name", "status", "passed", "total", "elapsed", "timestamp")]
-  }, digits = 3)
+  },
+  digits = 3,
+  sanitize.text.function = function(x) x  # allow HTML in cells (for colored status)
+  )
 }
 
 shinyApp(ui = ui, server = server)
