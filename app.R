@@ -220,7 +220,8 @@ ui <- fluidPage(
       ),
       actionButton("save_score", "Save my score"),
       br(), br(),
-      tableOutput("score_table")
+      tableOutput("score_table"),
+      downloadButton("download_scores", "Download scores")
     )
   )
 )
@@ -532,6 +533,16 @@ Time        : %.4f seconds</pre>',
       type = "message"
     )
   })
+
+  output$download_scores <- downloadHandler(
+    filename = function() {
+      paste0("scores_", Sys.Date(), ".csv")
+    },
+    content = function(file) {
+      write.csv(load_scores(), file = file, row.names = FALSE, fileEncoding = "UTF-8")
+    },
+    contentType = "text/csv"
+  )
 
   # Show ranking table for the selected problem (with colored status)
   output$score_table <- renderTable({
