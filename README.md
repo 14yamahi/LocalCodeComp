@@ -7,7 +7,7 @@ The app:
 - lets users select a problem,
 - lets them write and submit R code in the browser,
 - automatically runs hidden test cases,
-- shows the result (AC / TLE / WA / RE + runtime),
+- shows the result (Accepted: AC / Time Limit Exceeded: TLE / Wrong Answer: WA / Runtime Error: RE + runtime),
 - and optionally records scores in a simple ranking table (opt-in).
 
 ---
