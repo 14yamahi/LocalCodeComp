@@ -12,6 +12,7 @@ library(shiny)
 # ----- Scoreboard helpers (opt-in ranking) -----
 
 scores_file <- "scores.rds"
+admin_password <- Sys.getenv("SCORES_ADMIN_PASSWORD", unset = "changeme")
 
 empty_scores <- function() {
   data.frame(
@@ -192,6 +193,11 @@ ui <- fluidPage(
       actionButton("load_template", "Load / Reset template"),
       br(), br(),
       actionButton("run_judge", "Submit to Judge", class = "btn-primary"),
+      # --- Admin login UI ---
+      h4("Admin login"),
+      passwordInput("admin_pw", "Admin password"),
+      actionButton("admin_login", "Login"),
+      uiOutput("admin_panel"),   # admin-only area
       width = 4
     ),
     mainPanel(
@@ -581,6 +587,85 @@ Time        : %.4f seconds</pre>',
   digits = 3,
   sanitize.text.function = function(x) x  # allow HTML in cells (for colored status)
   )
+
+  # --- Admin state ---
+  is_admin <- reactiveVal(FALSE)
+
+  # Handle admin login
+  observeEvent(input$admin_login, {
+    if (!nzchar(admin_password)) {
+      showNotification(
+        "Admin password is not configured on the server (SCORES_ADMIN_PASSWORD).",
+        type = "error"
+      )
+      return()
+    }
+
+    if (identical(input$admin_pw, admin_password)) {
+      is_admin(TRUE)
+      showNotification("Admin mode enabled.", type = "message")
+    } else {
+      showNotification("Incorrect password.", type = "error")
+    }
+  })
+
+  # Admin-only panel (shown after successful login)
+  output$admin_panel <- renderUI({
+    req(is_admin())
+
+    tagList(
+      tags$hr(),
+      h4("Admin: import scores"),
+      fileInput(
+        "scores_file",
+        "Select scores.csv",
+        accept = c(".csv", "text/csv")
+      ),
+      actionButton("import_scores", "Import scores", class = "btn-danger"),
+      helpText("Use a scores.csv file previously downloaded from this app.")
+    )
+  })
+
+  # Handle CSV import
+  observeEvent(input$import_scores, {
+    req(is_admin())
+    req(input$scores_file)
+
+    df <- tryCatch(
+      readr::read_csv(input$scores_file$datapath, show_col_types = FALSE),
+      error = function(e) {
+        showNotification(
+          paste("Failed to read CSV:", e$message),
+          type = "error"
+        )
+        return(NULL)
+      }
+    )
+    req(!is.null(df))
+
+    # Adjust required columns to match your exported CSV
+    required_cols <- c("problem_id","problem_title","user_name", "status", "passed", "total", "elapsed", "timestamp")
+    if (!all(required_cols %in% names(df))) {
+      showNotification(
+        paste(
+          "CSV columns do not match expected columns. Expected:",
+          paste(required_cols, collapse = ", ")
+        ),
+        type = "error"
+      )
+      return()
+    }
+
+    # Convert time column if needed
+    if (is.character(df$timestamp)) {
+      df$timestamp <- as.POSIXct(df$timestamp, tz = "UTC")
+    }
+
+    # Overwrite current scores
+    save_scores(df)
+    score_data(df)
+    showNotification("Scores have been imported.", type = "message")
+  })
 }
 
 shinyApp(ui = ui, server = server)
