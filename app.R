@@ -8,6 +8,7 @@
 #     )
 
 library(shiny)
+library(readr)
 
 # ----- Scoreboard helpers (opt-in ranking) -----
 
