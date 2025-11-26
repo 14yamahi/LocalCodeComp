@@ -194,14 +194,15 @@ ui <- fluidPage(
       actionButton("load_template", "Load / Reset template"),
       br(), br(),
       actionButton("run_judge", "Submit to Judge", class = "btn-primary"),
+      br(), br(),
       # --- Admin login UI ---
       tags$details(
         tags$summary("Admin login"),
         br(),
-        passwordInput("admin_password", "Admin password"),
+        passwordInput("admin_pw", "Admin password"),
         actionButton("admin_login", "Login"),
         uiOutput("admin_panel")   # if you already have extra admin controls
-      )
+      ),
       width = 4
     ),
     mainPanel(
