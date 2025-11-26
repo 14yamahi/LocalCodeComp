@@ -195,10 +195,13 @@ ui <- fluidPage(
       br(), br(),
       actionButton("run_judge", "Submit to Judge", class = "btn-primary"),
       # --- Admin login UI ---
-      h4("Admin login"),
-      passwordInput("admin_pw", "Admin password"),
-      actionButton("admin_login", "Login"),
-      uiOutput("admin_panel"),   # admin-only area
+      tags$details(
+        tags$summary("Admin login"),
+        br(),
+        passwordInput("admin_password", "Admin password"),
+        actionButton("admin_login", "Login"),
+        uiOutput("admin_panel")   # if you already have extra admin controls
+      )
       width = 4
     ),
     mainPanel(
