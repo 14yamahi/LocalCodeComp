@@ -555,23 +555,24 @@ Time        : %.4f seconds</pre>',
     )
   })
 
-  output$download_scores <- downloadHandler(
-  filename = function() paste0("scores_", Sys.Date(), ".csv"),
+output$download_scores <- downloadHandler(
+  filename = function() {
+    paste0("scores_", Sys.Date(), ".csv")
+  },
   content = function(file) {
     df <- load_scores()
 
-    # Format timestamp as text (and protect from Excel with leading apostrophe)
-    if ("timestamp" %in% names(df)) {
-      df$timestamp <- paste0("'", format(df$timestamp, "%Y-%m-%d %H:%M:%OS", tz = "UTC"))
+    # Ensure timestamp is POSIXct (in case something odd got stored)
+    if (!inherits(df$timestamp, "POSIXct")) {
+      df$timestamp <- as.POSIXct(df$timestamp, tz = "UTC")
     }
 
-    # Optional: control numeric formatting before converting to character
-    if ("elapsed" %in% names(df)) df$elapsed <- sprintf("%.3f", df$elapsed)
-    if ("passed"  %in% names(df)) df$passed  <- as.character(df$passed)
-    if ("total"   %in% names(df)) df$total   <- as.character(df$total)
+    # Export timestamp as ISO string with date + time (UTC)
+    # Leading apostrophe forces Excel to treat it as text (prevents time-only formatting)
+    df$timestamp <- paste0("'", format(df$timestamp, "%Y-%m-%d %H:%M:%OS", tz = "UTC"))
 
-    # Convert all columns to character (text)
-    df[] <- lapply(df, function(x) if (is.character(x)) x else as.character(x))
+    # (Optional) make elapsed consistent in CSV too
+    df$elapsed <- sprintf("%.3f", as.numeric(df$elapsed))
 
     write.csv(df, file = file, row.names = FALSE, fileEncoding = "UTF-8", na = "")
   },
@@ -739,10 +740,11 @@ Time        : %.4f seconds</pre>',
     # Optional source_code column
     if (!("source_code" %in% names(df))) df$source_code <- NA_character_
 
-    # Convert time column if needed
-    if (is.character(df$timestamp)) {
-      df$timestamp <- as.POSIXct(df$timestamp, tz = "UTC")
-    }
+    # Remove leading apostrophe if present, then parse
+    df$timestamp <- sub("^'", "", trimws(as.character(df$timestamp)))
+
+    # Parse robustly (this matches the export format above)
+    df$timestamp <- as.POSIXct(df$timestamp, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC")
 
     # Overwrite current scores
     save_scores(df)
