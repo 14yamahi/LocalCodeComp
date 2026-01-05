@@ -46,12 +46,54 @@ save_scores <- function(df) {
   saveRDS(df, scores_file)
 }
 
-excel_serial_to_posixct <- function(x, tz = "UTC", system = c("windows", "mac")) {
-  system <- match.arg(system)
-  origin <- if (system == "windows") "1899-12-30" else "1904-01-01"
-  as.POSIXct(as.numeric(x) * 86400, origin = origin, tz = tz)
+excel_serial_to_posixct <- function(x_num, tz = "UTC", origin = c("1899-12-30", "1904-01-01")) {
+  origin <- match.arg(origin)
+  as.POSIXct(as.numeric(x_num) * 86400, origin = origin, tz = tz)
 }
 
+parse_timestamp_any <- function(x, tz = "UTC") {
+  n <- length(x)
+
+  # Already POSIXct
+  if (inherits(x, "POSIXct")) return(as.POSIXct(x, tz = tz))
+
+  # Convert to character for unified parsing
+  x_chr <- trimws(as.character(x))
+  x_chr <- sub("^'", "", x_chr)     # in case you exported with leading apostrophe
+  x_chr[x_chr == ""] <- NA_character_
+
+  out <- as.POSIXct(rep(NA_real_, n), origin = "1970-01-01", tz = tz)
+
+  # Try numeric conversion (Excel serial often comes as character)
+  x_num <- suppressWarnings(as.numeric(x_chr))
+
+  # Heuristic: Excel serial days are typically in this range for modern dates
+  is_excel <- !is.na(x_num) & x_num > 20000 & x_num < 80000
+
+  if (any(is_excel)) {
+    # Try both Excel origins and pick the one that yields more "reasonable" years
+    t1900 <- excel_serial_to_posixct(x_num[is_excel], tz = tz, origin = "1899-12-30")
+    t1904 <- excel_serial_to_posixct(x_num[is_excel], tz = tz, origin = "1904-01-01")
+
+    y1900 <- as.integer(format(t1900, "%Y"))
+    y1904 <- as.integer(format(t1904, "%Y"))
+
+    # Reasonable year window (adjust if you want)
+    score1900 <- sum(y1900 >= 2000 & y1900 <= 2100, na.rm = TRUE)
+    score1904 <- sum(y1904 >= 2000 & y1904 <= 2100, na.rm = TRUE)
+
+    out[is_excel] <- if (score1904 > score1900) t1904 else t1900
+  }
+
+  # Remaining values: try parsing as datetime strings
+  rem <- which(!is_excel & !is.na(x_chr))
+  if (length(rem) > 0) {
+    dt <- suppressWarnings(readr::parse_datetime(x_chr[rem]))
+    out[rem] <- as.POSIXct(dt, tz = tz)
+  }
+
+  out
+}
 # ----- Helper: load problems from ./problems -----
 
 load_problems <- function(problems_dir = "problems") {
@@ -746,27 +788,19 @@ output$download_scores <- downloadHandler(
     # Optional source_code column
     if (!("source_code" %in% names(df))) df$source_code <- NA_character_
 
-    # Convert timestamp:
-    # - if numeric (e.g., 45992.2326), treat as Excel serial date
-    # - otherwise parse as datetime string
-    if (is.numeric(df$timestamp)) {
-      df$timestamp <- excel_serial_to_posixct(df$timestamp, tz = "UTC", system = "windows")
-    } else {
-      ts_chr <- trimws(as.character(df$timestamp))
-      ts_chr <- sub("^'", "", ts_chr)  # if you ever export with leading apostrophe
+    # convert timestamp
+    df$timestamp <- parse_timestamp_any(df$timestamp, tz = "UTC")
 
-      ts_num <- suppressWarnings(as.numeric(ts_chr))
-      looks_numeric <- !is.na(ts_num) & grepl("^\\s*\\d+(\\.\\d+)?\\s*$", ts_chr)
-
-      df$timestamp <- as.POSIXct(NA, tz = "UTC")
-      df$timestamp[looks_numeric] <- excel_serial_to_posixct(ts_num[looks_numeric], tz = "UTC", system = "windows")
-
-      # parse the non-numeric ones as datetimes
-      if (any(!looks_numeric)) {
-        df$timestamp[!looks_numeric] <- readr::parse_datetime(ts_chr[!looks_numeric])
-        df$timestamp[!looks_numeric] <- as.POSIXct(df$timestamp[!looks_numeric], tz = "UTC")
-      }
+    if (all(is.na(df$timestamp)) && nrow(df) > 0) {
+      showNotification(
+        paste0(
+          "Failed to parse timestamps. Example raw value: ",
+          as.character(df$timestamp[1])
+        ),
+        type = "error"
+      )
     }
+
     # Overwrite current scores
     save_scores(df)
     score_data(df)
