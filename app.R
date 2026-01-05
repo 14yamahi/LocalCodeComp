@@ -50,50 +50,39 @@ excel_serial_to_posixct <- function(x_num, tz = "UTC", origin = c("1899-12-30", 
   origin <- match.arg(origin)
   as.POSIXct(as.numeric(x_num) * 86400, origin = origin, tz = tz)
 }
-
 parse_timestamp_any <- function(x, tz = "UTC") {
-  n <- length(x)
-
-  # Already POSIXct
-  if (inherits(x, "POSIXct")) return(as.POSIXct(x, tz = tz))
-
-  # Convert to character for unified parsing
   x_chr <- trimws(as.character(x))
-  x_chr <- sub("^'", "", x_chr)     # in case you exported with leading apostrophe
+  x_chr <- sub("^'", "", x_chr)    # if you ever exported with leading apostrophe
   x_chr[x_chr == ""] <- NA_character_
 
-  out <- as.POSIXct(rep(NA_real_, n), origin = "1970-01-01", tz = tz)
+  out <- as.POSIXct(rep(NA_real_, length(x_chr)), origin = "1970-01-01", tz = tz)
 
-  # Try numeric conversion (Excel serial often comes as character)
+  # A) Excel serial numbers (days since 1899-12-30 in the 1900 system)
   x_num <- suppressWarnings(as.numeric(x_chr))
-
-  # Heuristic: Excel serial days are typically in this range for modern dates
-  is_excel <- !is.na(x_num) & x_num > 20000 & x_num < 80000
-
+  is_excel <- !is.na(x_num) & grepl("^\\d+(\\.\\d+)?$", x_chr) & x_num > 20000 & x_num < 80000
   if (any(is_excel)) {
-    # Try both Excel origins and pick the one that yields more "reasonable" years
-    t1900 <- excel_serial_to_posixct(x_num[is_excel], tz = tz, origin = "1899-12-30")
-    t1904 <- excel_serial_to_posixct(x_num[is_excel], tz = tz, origin = "1904-01-01")
-
-    y1900 <- as.integer(format(t1900, "%Y"))
-    y1904 <- as.integer(format(t1904, "%Y"))
-
-    # Reasonable year window (adjust if you want)
-    score1900 <- sum(y1900 >= 2000 & y1900 <= 2100, na.rm = TRUE)
-    score1904 <- sum(y1904 >= 2000 & y1904 <= 2100, na.rm = TRUE)
-
-    out[is_excel] <- if (score1904 > score1900) t1904 else t1900
+    out[is_excel] <- as.POSIXct(x_num[is_excel] * 86400, origin = "1899-12-30", tz = tz)
   }
 
-  # Remaining values: try parsing as datetime strings
-  rem <- which(!is_excel & !is.na(x_chr))
-  if (length(rem) > 0) {
-    dt <- suppressWarnings(readr::parse_datetime(x_chr[rem]))
-    out[rem] <- as.POSIXct(dt, tz = tz)
+  # B) Common datetime string formats (including your file: "12/1/2025 05:35")
+  fmts <- c(
+    "%Y-%m-%d %H:%M:%OS", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+    "%m/%d/%Y %H:%M:%OS", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M",
+    "%d/%m/%Y %H:%M:%OS", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M"
+  )
+
+  rem <- which(is.na(out) & !is.na(x_chr))
+  for (f in fmts) {
+    if (!length(rem)) break
+    parsed <- suppressWarnings(as.POSIXct(x_chr[rem], format = f, tz = tz))
+    ok <- !is.na(parsed)
+    out[rem[ok]] <- parsed[ok]
+    rem <- rem[!ok]
   }
 
   out
 }
+
 # ----- Helper: load problems from ./problems -----
 
 load_problems <- function(problems_dir = "problems") {
@@ -791,16 +780,16 @@ output$download_scores <- downloadHandler(
     # convert timestamp
     df$timestamp <- parse_timestamp_any(df$timestamp, tz = "UTC")
 
-    if (all(is.na(df$timestamp)) && nrow(df) > 0) {
+    if (nrow(df) > 0 && all(is.na(df$timestamp))) {
       showNotification(
         paste0(
-          "Failed to parse timestamps. Example raw value: ",
+          "Failed to parse timestamps. Example value: ",
           as.character(df$timestamp[1])
         ),
         type = "error"
       )
+      return()
     }
-
     # Overwrite current scores
     save_scores(df)
     score_data(df)
