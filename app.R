@@ -159,64 +159,6 @@ run_all_tests <- function(fun, problem) {
   )
 }
 
-parse_mmss_to_seconds <- function(x) {
-  # Accept "MM:SS" or "MM:SS.s" or "HH:MM:SS.s"
-  x <- trimws(x)
-  parts <- strsplit(x, ":", fixed = TRUE)
-
-  out <- rep(NA_real_, length(parts))
-  for (i in seq_along(parts)) {
-    p <- parts[[i]]
-    if (length(p) == 2) {
-      mm <- suppressWarnings(as.numeric(p[1]))
-      ss <- suppressWarnings(as.numeric(p[2]))
-      if (is.finite(mm) && is.finite(ss)) out[i] <- mm * 60 + ss
-    } else if (length(p) == 3) {
-      hh <- suppressWarnings(as.numeric(p[1]))
-      mm <- suppressWarnings(as.numeric(p[2]))
-      ss <- suppressWarnings(as.numeric(p[3]))
-      if (is.finite(hh) && is.finite(mm) && is.finite(ss)) out[i] <- hh * 3600 + mm * 60 + ss
-    }
-  }
-  out
-}
-
-parse_timestamp_utc <- function(x) {
-  if (inherits(x, "POSIXct")) return(as.POSIXct(x, tz = "UTC"))
-
-  if (is.numeric(x)) {
-    # treat as epoch seconds if it looks like it
-    if (all(x > 1e8, na.rm = TRUE)) {
-      return(as.POSIXct(x, origin = "1970-01-01", tz = "UTC"))
-    }
-    # otherwise treat as seconds-from-midnight on 1970-01-01
-    base <- as.POSIXct("1970-01-01 00:00:00", tz = "UTC")
-    return(base + x)
-  }
-
-  x <- trimws(as.character(x))
-  x[x == ""] <- NA_character_
-
-  # Strip leading apostrophe used to force Excel text
-  x <- sub("^'", "", x)
-
-  # First: try parsing as datetime (common formats)
-  out <- suppressWarnings(readr::parse_datetime(x))
-
-  # Fallback: if it looks like mm:ss(.), parse as duration and anchor to 1970-01-01
-  still_na <- is.na(out) & !is.na(x)
-  if (any(still_na)) {
-    secs <- parse_mmss_to_seconds(x[still_na])
-    if (any(!is.na(secs))) {
-      base <- as.POSIXct("1970-01-01 00:00:00", tz = "UTC")
-      out[still_na] <- base + secs
-    }
-  }
-
-  as.POSIXct(out, tz = "UTC")
-}
-
-
 # Load all problems at startup
 problems <- load_problems()
 
@@ -797,14 +739,11 @@ Time        : %.4f seconds</pre>',
     # Optional source_code column
     if (!("source_code" %in% names(df))) df$source_code <- NA_character_
 
-    # Robust timestamp conversion
-    df$timestamp <- parse_timestamp_utc(df$timestamp)
-    if (any(is.na(df$timestamp))) {
-      showNotification(
-        "Some timestamps could not be parsed and were set to NA. Please check your CSV timestamp format.",
-        type = "warning"
-      )
+    # Convert time column if needed
+    if (is.character(df$timestamp)) {
+      df$timestamp <- as.POSIXct(df$timestamp, tz = "UTC")
     }
+
     # Overwrite current scores
     save_scores(df)
     score_data(df)
