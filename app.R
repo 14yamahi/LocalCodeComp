@@ -9,6 +9,7 @@
 
 library(shiny)
 library(readr)
+library(DT)
 
 # ----- Scoreboard helpers (opt-in ranking) -----
 
@@ -25,6 +26,7 @@ empty_scores <- function() {
     total         = integer(),
     elapsed       = numeric(),
     timestamp     = as.POSIXct(character()),
+    source_code   = character(),          # ADDED
     stringsAsFactors = FALSE
   )
 }
@@ -32,7 +34,12 @@ empty_scores <- function() {
 load_scores <- function() {
   if (!file.exists(scores_file)) return(empty_scores())
   out <- try(readRDS(scores_file), silent = TRUE)
-  if (inherits(out, "try-error")) empty_scores() else out
+  if (inherits(out, "try-error")) return(empty_scores())
+
+  # Backward compatibility: old scores.rds won't have source_code
+  if (!("source_code" %in% names(out))) out$source_code <- NA_character_
+
+  out
 }
 
 save_scores <- function(df) {
@@ -231,7 +238,7 @@ ui <- fluidPage(
       ),
       actionButton("save_score", "Save my score"),
       br(), br(),
-      tableOutput("score_table"),
+      DTOutput("score_table"),   # CHANGED (was tableOutput)
       downloadButton("download_scores", "Download scores")
     )
   )
@@ -354,6 +361,7 @@ server <- function(input, output, session) {
     }
 
     # Store last_result for optional ranking (ensure timestamp is POSIXct)
+    # ADDED: store source_code (the judged code)
     last_result(list(
       problem_id    = p$id,
       problem_title = p$title,
@@ -361,7 +369,8 @@ server <- function(input, output, session) {
       passed        = res$passed,
       total         = res$total,
       elapsed       = res$elapsed,
-      timestamp     = as.POSIXct(Sys.time(), tz = "UTC")
+      timestamp     = as.POSIXct(Sys.time(), tz = "UTC"),
+      source_code   = code
     ))
 
     # Prepare colored status label
@@ -509,6 +518,7 @@ Time        : %.4f seconds</pre>',
       total         = lr$total,
       elapsed       = lr$elapsed,
       timestamp     = as.POSIXct(lr$timestamp, tz = "UTC"),
+      source_code   = lr$source_code,     # ADDED
       stringsAsFactors = FALSE
     )
 
@@ -555,14 +565,47 @@ Time        : %.4f seconds</pre>',
     contentType = "text/csv"
   )
 
-  # Show ranking table for the selected problem (with colored status)
-  output$score_table <- renderTable({
+  # --- View source modal handler (NEW) ---
+  observeEvent(input$view_source_key, {
+    req(input$view_source_key)
+
+    df <- load_scores()
+    if (!("source_code" %in% names(df))) df$source_code <- NA_character_
+
+    # key = problem_id__user_name
+    df$key <- paste(df$problem_id, df$user_name, sep = "__")
+    row <- df[df$key == input$view_source_key, , drop = FALSE]
+
+    if (nrow(row) == 0) {
+      showNotification("Source not found (the ranking may have been updated).", type = "error")
+      return()
+    }
+
+    code <- row$source_code[1]
+    if (is.na(code) || !nzchar(code)) code <- "(No source code saved for this entry.)"
+
+    showModal(modalDialog(
+      title = paste0("Source code: ", row$user_name[1], " / ", row$problem_title[1]),
+      size = "l",
+      easyClose = TRUE,
+      footer = modalButton("Close"),
+      tags$pre(
+        style = "max-height:60vh; overflow-y:auto; white-space:pre-wrap;",
+        htmltools::htmlEscape(code)
+      )
+    ))
+  })
+
+  # Show ranking table for the selected problem (with colored status + Source button)
+  output$score_table <- renderDT({
     df <- score_data()
     if (nrow(df) == 0) return(NULL)
 
     p <- selected_problem()
     df <- df[df$problem_id == p$id, , drop = FALSE]
     if (nrow(df) == 0) return(NULL)
+
+    if (!("source_code" %in% names(df))) df$source_code <- NA_character_
 
     status_order <- c("AC", "TLE", "WA", "RE")
     df$status_factor <- factor(df$status, levels = status_order, ordered = TRUE)
@@ -587,11 +630,25 @@ Time        : %.4f seconds</pre>',
     # Format timestamp nicely for display
     df$timestamp <- format(df$timestamp, "%Y-%m-%d %H:%M:%S")
 
-    df[, c("user_name", "status", "passed", "total", "elapsed", "timestamp")]
-  },
-  digits = 3,
-  sanitize.text.function = function(x) x  # allow HTML in cells (for colored status)
-  )
+    # Add "Source" button column
+    df$key <- paste(df$problem_id, df$user_name, sep = "__")
+    df$Source <- sprintf(
+      '<button class="btn btn-sm btn-info" onclick="Shiny.setInputValue(\'view_source_key\', \'%s\', {priority: \'event\'})">View</button>',
+      df$key
+    )
+
+    show_df <- df[, c("user_name", "status", "passed", "total", "elapsed", "timestamp", "Source")]
+
+    datatable(
+      show_df,
+      rownames = FALSE,
+      escape = FALSE,
+      options = list(
+        pageLength = 20,
+        autoWidth = TRUE
+      )
+    )
+  })
 
   # --- Admin state ---
   is_admin <- reactiveVal(FALSE)
@@ -648,18 +705,21 @@ Time        : %.4f seconds</pre>',
     )
     req(!is.null(df))
 
-    # Adjust required columns to match your exported CSV
+    # Minimum required columns
     required_cols <- c("problem_id","problem_title","user_name", "status", "passed", "total", "elapsed", "timestamp")
     if (!all(required_cols %in% names(df))) {
       showNotification(
         paste(
-          "CSV columns do not match expected columns. Expected:",
+          "CSV columns do not match expected columns. Expected at least:",
           paste(required_cols, collapse = ", ")
         ),
         type = "error"
       )
       return()
     }
+
+    # Optional source_code column
+    if (!("source_code" %in% names(df))) df$source_code <- NA_character_
 
     # Convert time column if needed
     if (is.character(df$timestamp)) {
