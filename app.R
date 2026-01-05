@@ -159,6 +159,42 @@ run_all_tests <- function(fun, problem) {
   )
 }
 
+parse_timestamp_utc <- function(x) {
+  # Already POSIXct?
+  if (inherits(x, "POSIXct")) return(as.POSIXct(x, tz = "UTC"))
+
+  # Numeric (e.g., epoch seconds)
+  if (is.numeric(x)) return(as.POSIXct(x, origin = "1970-01-01", tz = "UTC"))
+
+  # Character: try multiple common formats
+  x <- trimws(as.character(x))
+  x[x == ""] <- NA_character_
+
+  # Try readr parsing first (handles many ISO forms)
+  out <- suppressWarnings(readr::parse_datetime(x))
+
+  # Fallback formats if parse_datetime fails (still NA)
+  still_na <- is.na(out) & !is.na(x)
+  if (any(still_na)) {
+    fmts <- c(
+      "%Y-%m-%d %H:%M:%S",
+      "%Y/%m/%d %H:%M:%S",
+      "%Y-%m-%dT%H:%M:%S",
+      "%Y-%m-%dT%H:%M:%SZ"
+    )
+    for (f in fmts) {
+      out2 <- suppressWarnings(as.POSIXct(x[still_na], format = f, tz = "UTC"))
+      idx <- which(still_na)
+      out[idx[!is.na(out2)]] <- out2[!is.na(out2)]
+      still_na <- is.na(out) & !is.na(x)
+      if (!any(still_na)) break
+    }
+  }
+
+  as.POSIXct(out, tz = "UTC")
+}
+
+
 # Load all problems at startup
 problems <- load_problems()
 
@@ -639,7 +675,7 @@ Time        : %.4f seconds</pre>',
 
     show_df <- df[, c("user_name", "status", "passed", "total", "elapsed", "timestamp", "Source")]
 
-    datatable(
+    dt <- datatable(
       show_df,
       rownames = FALSE,
       escape = FALSE,
@@ -648,6 +684,11 @@ Time        : %.4f seconds</pre>',
         autoWidth = TRUE
       )
     )
+
+    # Round elapsed to 3 decimals (and you can do passed/total as integers too)
+    dt <- formatRound(dt, columns = "elapsed", digits = 3)
+
+    dt
   })
 
   # --- Admin state ---
@@ -721,11 +762,14 @@ Time        : %.4f seconds</pre>',
     # Optional source_code column
     if (!("source_code" %in% names(df))) df$source_code <- NA_character_
 
-    # Convert time column if needed
-    if (is.character(df$timestamp)) {
-      df$timestamp <- as.POSIXct(df$timestamp, tz = "UTC")
+    # Robust timestamp conversion
+    df$timestamp <- parse_timestamp_utc(df$timestamp)
+    if (any(is.na(df$timestamp))) {
+      showNotification(
+        "Some timestamps could not be parsed and were set to NA. Please check your CSV timestamp format.",
+        type = "warning"
+      )
     }
-
     # Overwrite current scores
     save_scores(df)
     score_data(df)
