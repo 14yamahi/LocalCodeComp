@@ -159,35 +159,57 @@ run_all_tests <- function(fun, problem) {
   )
 }
 
+parse_mmss_to_seconds <- function(x) {
+  # Accept "MM:SS" or "MM:SS.s" or "HH:MM:SS.s"
+  x <- trimws(x)
+  parts <- strsplit(x, ":", fixed = TRUE)
+
+  out <- rep(NA_real_, length(parts))
+  for (i in seq_along(parts)) {
+    p <- parts[[i]]
+    if (length(p) == 2) {
+      mm <- suppressWarnings(as.numeric(p[1]))
+      ss <- suppressWarnings(as.numeric(p[2]))
+      if (is.finite(mm) && is.finite(ss)) out[i] <- mm * 60 + ss
+    } else if (length(p) == 3) {
+      hh <- suppressWarnings(as.numeric(p[1]))
+      mm <- suppressWarnings(as.numeric(p[2]))
+      ss <- suppressWarnings(as.numeric(p[3]))
+      if (is.finite(hh) && is.finite(mm) && is.finite(ss)) out[i] <- hh * 3600 + mm * 60 + ss
+    }
+  }
+  out
+}
+
 parse_timestamp_utc <- function(x) {
-  # Already POSIXct?
   if (inherits(x, "POSIXct")) return(as.POSIXct(x, tz = "UTC"))
 
-  # Numeric (e.g., epoch seconds)
-  if (is.numeric(x)) return(as.POSIXct(x, origin = "1970-01-01", tz = "UTC"))
+  if (is.numeric(x)) {
+    # treat as epoch seconds if it looks like it
+    if (all(x > 1e8, na.rm = TRUE)) {
+      return(as.POSIXct(x, origin = "1970-01-01", tz = "UTC"))
+    }
+    # otherwise treat as seconds-from-midnight on 1970-01-01
+    base <- as.POSIXct("1970-01-01 00:00:00", tz = "UTC")
+    return(base + x)
+  }
 
-  # Character: try multiple common formats
   x <- trimws(as.character(x))
   x[x == ""] <- NA_character_
 
-  # Try readr parsing first (handles many ISO forms)
+  # Strip leading apostrophe used to force Excel text
+  x <- sub("^'", "", x)
+
+  # First: try parsing as datetime (common formats)
   out <- suppressWarnings(readr::parse_datetime(x))
 
-  # Fallback formats if parse_datetime fails (still NA)
+  # Fallback: if it looks like mm:ss(.), parse as duration and anchor to 1970-01-01
   still_na <- is.na(out) & !is.na(x)
   if (any(still_na)) {
-    fmts <- c(
-      "%Y-%m-%d %H:%M:%S",
-      "%Y/%m/%d %H:%M:%S",
-      "%Y-%m-%dT%H:%M:%S",
-      "%Y-%m-%dT%H:%M:%SZ"
-    )
-    for (f in fmts) {
-      out2 <- suppressWarnings(as.POSIXct(x[still_na], format = f, tz = "UTC"))
-      idx <- which(still_na)
-      out[idx[!is.na(out2)]] <- out2[!is.na(out2)]
-      still_na <- is.na(out) & !is.na(x)
-      if (!any(still_na)) break
+    secs <- parse_mmss_to_seconds(x[still_na])
+    if (any(!is.na(secs))) {
+      base <- as.POSIXct("1970-01-01 00:00:00", tz = "UTC")
+      out[still_na] <- base + secs
     }
   }
 
@@ -592,14 +614,27 @@ Time        : %.4f seconds</pre>',
   })
 
   output$download_scores <- downloadHandler(
-    filename = function() {
-      paste0("scores_", Sys.Date(), ".csv")
-    },
-    content = function(file) {
-      write.csv(load_scores(), file = file, row.names = FALSE, fileEncoding = "UTF-8")
-    },
-    contentType = "text/csv"
-  )
+  filename = function() paste0("scores_", Sys.Date(), ".csv"),
+  content = function(file) {
+    df <- load_scores()
+
+    # Format timestamp as text (and protect from Excel with leading apostrophe)
+    if ("timestamp" %in% names(df)) {
+      df$timestamp <- paste0("'", format(df$timestamp, "%Y-%m-%d %H:%M:%OS", tz = "UTC"))
+    }
+
+    # Optional: control numeric formatting before converting to character
+    if ("elapsed" %in% names(df)) df$elapsed <- sprintf("%.3f", df$elapsed)
+    if ("passed"  %in% names(df)) df$passed  <- as.character(df$passed)
+    if ("total"   %in% names(df)) df$total   <- as.character(df$total)
+
+    # Convert all columns to character (text)
+    df[] <- lapply(df, function(x) if (is.character(x)) x else as.character(x))
+
+    write.csv(df, file = file, row.names = FALSE, fileEncoding = "UTF-8", na = "")
+  },
+  contentType = "text/csv"
+)
 
   # --- View source modal handler (NEW) ---
   observeEvent(input$view_source_key, {
