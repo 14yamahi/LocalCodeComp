@@ -46,6 +46,12 @@ save_scores <- function(df) {
   saveRDS(df, scores_file)
 }
 
+excel_serial_to_posixct <- function(x, tz = "UTC", system = c("windows", "mac")) {
+  system <- match.arg(system)
+  origin <- if (system == "windows") "1899-12-30" else "1904-01-01"
+  as.POSIXct(as.numeric(x) * 86400, origin = origin, tz = tz)
+}
+
 # ----- Helper: load problems from ./problems -----
 
 load_problems <- function(problems_dir = "problems") {
@@ -740,12 +746,27 @@ output$download_scores <- downloadHandler(
     # Optional source_code column
     if (!("source_code" %in% names(df))) df$source_code <- NA_character_
 
-    # Remove leading apostrophe if present, then parse
-    df$timestamp <- sub("^'", "", trimws(as.character(df$timestamp)))
+    # Convert timestamp:
+    # - if numeric (e.g., 45992.2326), treat as Excel serial date
+    # - otherwise parse as datetime string
+    if (is.numeric(df$timestamp)) {
+      df$timestamp <- excel_serial_to_posixct(df$timestamp, tz = "UTC", system = "windows")
+    } else {
+      ts_chr <- trimws(as.character(df$timestamp))
+      ts_chr <- sub("^'", "", ts_chr)  # if you ever export with leading apostrophe
 
-    # Parse robustly (this matches the export format above)
-    df$timestamp <- as.POSIXct(df$timestamp, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC")
+      ts_num <- suppressWarnings(as.numeric(ts_chr))
+      looks_numeric <- !is.na(ts_num) & grepl("^\\s*\\d+(\\.\\d+)?\\s*$", ts_chr)
 
+      df$timestamp <- as.POSIXct(NA, tz = "UTC")
+      df$timestamp[looks_numeric] <- excel_serial_to_posixct(ts_num[looks_numeric], tz = "UTC", system = "windows")
+
+      # parse the non-numeric ones as datetimes
+      if (any(!looks_numeric)) {
+        df$timestamp[!looks_numeric] <- readr::parse_datetime(ts_chr[!looks_numeric])
+        df$timestamp[!looks_numeric] <- as.POSIXct(df$timestamp[!looks_numeric], tz = "UTC")
+      }
+    }
     # Overwrite current scores
     save_scores(df)
     score_data(df)
